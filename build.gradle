@@ -6,11 +6,10 @@ buildscript {
     }
 }
 
-import de.undercouch.gradle.tasks.download.Download
 import groovy.io.FileType
 import groovy.json.JsonSlurper
+
 import java.nio.file.Files
-import java.net.URL
 
 plugins {
     //Check the latest version on bintray: https://bintray.com/jfrog/jfrog-jars/build-info-extractor-gradle/view
@@ -43,14 +42,16 @@ def etcDir = new File(projectDir, 'etc')
 def scriptsDir = new File(projectDir, 'src/scripts')
 def installSh = new File(scriptsDir, 'install.sh')
 def control = new File(scriptsDir, 'control-art.sh')
-def localDir = new File('local-store')
-def artDir = new File('artifactory')
+def localDir = new File(projectDir, 'local-store')
+def artDir = new File(projectDir, 'artifactory')
 def artProZip = new File(localDir, 'artifactory-pro.zip')
 
+ext.artifactoryVersion = System.getProperty('artifactoryVersion', project.hasProperty('artifactoryVersion') ? artifactoryVersion : '_latest')
+ext.artifactoryContextUrl = System.getProperty('artifactoryContextUrl', project.hasProperty('artifactory_contextUrl') ? artifactory_contextUrl : 'https://repo.jfrog.org/artifactory')
+ext.artifactoryDownloadUrl = System.getProperty('artifactoryDownloadUrl', project.hasProperty('artifactoryDownloadUrl') ? artifactoryDownloadUrl : 'https://dl.bintray.com/jfrog/artifactory-pro/org/artifactory/pro/jfrog-artifactory-pro/[VERSION]/jfrog-artifactory-pro-[VERSION].zip')
+
 def getArtVersion() {
-    if (!project.hasProperty('artifactoryVersion')) {
-        return null
-    } else if (artifactoryVersion == "_latest") {
+    if (artifactoryVersion == "_latest") {
         try {
             def url = new URL("https://api.bintray.com/packages/jfrog/artifactory-pro/jfrog-artifactory-pro-zip")
             def json = new JsonSlurper().parse(url)
@@ -64,30 +65,25 @@ def getArtVersion() {
 
 dependencies {
     testCompile(group: 'org.spockframework', name: 'spock-core', version: '1.0-groovy-2.4') {
-        exclude module : 'groovy-all'
+        exclude module: 'groovy-all'
     }
     testCompile(group: 'com.icegreen', name: 'greenmail', version: '1.5.3')
     compile(group: 'org.codehaus.groovy', name: 'groovy-all', version: '2.4.5')
     compile(group: 'org.jfrog.artifactory.client', name: 'artifactory-java-client-services', version: '2.3.3')
 }
 
-task downloadArtPro << {
-    def downloadurl
-    def version = getArtVersion()
-    if (!project.hasProperty('artifactoryDownloadUrl')) {
-        if (version.startsWith("2.") || version.startsWith("3.")) {
-            downloadurl = "https://dl.bintray.com/jfrog/artifactory-pro/org/artifactory/powerpack/artifactory-powerpack-standalone/[VERSION]/artifactory-powerpack-standalone-[VERSION].zip"
-        } else {
-            downloadurl = "https://dl.bintray.com/jfrog/artifactory-pro/org/artifactory/pro/jfrog-artifactory-pro/[VERSION]/jfrog-artifactory-pro-[VERSION].zip"
+task downloadArtPro {
+    doLast {
+        def downloadurl = artifactoryDownloadUrl
+        def version = getArtVersion()
+        def updatedUrl = downloadurl.replaceAll('\\[VERSION]', version)
+        println "Downloading $updatedUrl into ${artProZip.getPath()}"
+        download {
+            src updatedUrl
+            dest artProZip
+            onlyIfNewer true
+            quiet true
         }
-    } else downloadurl = artifactoryDownloadUrl
-    def updatedUrl = downloadurl.replaceAll('\\[VERSION]', version)
-    println "Downloading $updatedUrl into ${artProZip.getPath()}"
-    download {
-        src updatedUrl
-        dest artProZip
-        onlyIfNewer true
-        quiet true
     }
 }
 
@@ -270,30 +266,32 @@ task updateArtPro() {
 // link a plugin and any supplementary files into the dev environment
 // usage: ./gradlew workOnPlugin -DpluginName=all
 // link all plugins and any supplementary files into the dev environment
-task workOnPlugin << {
-    if (!System.properties.pluginName)
-        throw new InvalidUserDataException('No plugin specified')
-    def userPlugins = new File(System.properties.userPluginsDir)
-    if (!userPlugins.isDirectory())
-        throw new InvalidUserDataException('System property userPluginsDir not a directory')
-    if (System.properties.pluginName == 'all') {
-        def dir = new File(userPlugins.absolutePath)
-        dir.eachFileRecurse(FileType.FILES) { file ->
-            if (file.name.endsWith('.groovy') && file.name != 'setup.groovy' && !file.name.endsWith('Test.groovy')) {
-                String prefix = "${file.name.minus('.groovy')}"
-                String tmp = file.absolutePath.minus("/$file.name")
-                String fullPrefix = tmp.minus("$dir.absolutePath/")
-                linkPlugin(fullPrefix,prefix, userPlugins)
+task workOnPlugin {
+    doLast {
+        if (!System.properties.pluginName)
+            throw new InvalidUserDataException('No plugin specified')
+        def userPlugins = new File(System.properties.userPluginsDir)
+        if (!userPlugins.isDirectory())
+            throw new InvalidUserDataException('System property userPluginsDir not a directory')
+        if (System.properties.pluginName == 'all') {
+            def dir = new File(userPlugins.absolutePath)
+            dir.eachFileRecurse(FileType.FILES) { file ->
+                if (file.name.endsWith('.groovy') && file.name != 'setup.groovy' && !file.name.endsWith('Test.groovy')) {
+                    String prefix = "${file.name.minus('.groovy')}"
+                    String tmp = file.absolutePath.minus("/$file.name")
+                    String fullPrefix = tmp.minus("$dir.absolutePath/")
+                    linkPlugin(fullPrefix, prefix, userPlugins)
+                }
             }
+        } else {
+            def prefix = new File(System.properties.pluginName).getName()
+            def fullPrefix = System.properties.pluginName
+            linkPlugin(fullPrefix, prefix, userPlugins)
         }
-    } else {
-        def prefix = new File(System.properties.pluginName).getName()
-        def fullPrefix = System.properties.pluginName
-        linkPlugin(fullPrefix,prefix, userPlugins)
     }
 }
 
-def linkPlugin(def fullPrefix,def prefix, File userPlugins) {
+def linkPlugin(def fullPrefix, def prefix, File userPlugins) {
     def success = true, linked = false;
     def etcDir = new File(projectDir, 'etc')
     def lnPath = new File(etcDir, 'plugins')
@@ -364,53 +362,55 @@ def linkPlugin(def fullPrefix,def prefix, File userPlugins) {
 // remove links to a plugin and any supplementary files from the dev environment, and restart artifactory
 // usage: ./gradlew stopWorkOnPlugin -DpluginName=all
 // remove links to all plugins and any supplementary files from the dev environment, and restart artifactory
-task stopWorkOnPlugin << {
-    if (!System.properties.pluginName) {
-        throw new InvalidUserDataException('No plugin specified')
-    }
-    def success = true, removed = false;
-    def prefix = new File(System.properties.pluginName).getName()
-    def testprefix = prefix.substring(0, 1).toUpperCase() + prefix.substring(1) + 'Test'
-    for (def lnPath : new File(etcDir, 'plugins').listFiles()) {
-        def lnName = lnPath.getName()
-        if ((System.properties.pluginName == 'all' || lnName.startsWith(prefix + '.'))
-                && Files.isSymbolicLink(lnPath.toPath())) {
-            if (lnPath.delete()) {
-                removed = true;
-                println "Removed link ${lnName}"
-            } else {
-                success = false;
-                println "Failed to remove link ${lnName}"
+task stopWorkOnPlugin {
+    doLast {
+        if (!System.properties.pluginName) {
+            throw new InvalidUserDataException('No plugin specified')
+        }
+        def success = true, removed = false;
+        def prefix = new File(System.properties.pluginName).getName()
+        def testprefix = prefix.substring(0, 1).toUpperCase() + prefix.substring(1) + 'Test'
+        for (def lnPath : new File(etcDir, 'plugins').listFiles()) {
+            def lnName = lnPath.getName()
+            if ((System.properties.pluginName == 'all' || lnName.startsWith(prefix + '.'))
+                    && Files.isSymbolicLink(lnPath.toPath())) {
+                if (lnPath.delete()) {
+                    removed = true;
+                    println "Removed link ${lnName}"
+                } else {
+                    success = false;
+                    println "Failed to remove link ${lnName}"
+                }
             }
         }
-    }
-    for (def lnPath : new File(projectDir, 'src/test/groovy').listFiles()) {
-        def lnName = lnPath.getName()
-        if ((System.properties.pluginName == 'all' || lnName == testprefix + '.groovy' || lnName == testprefix)
-                && Files.isSymbolicLink(lnPath.toPath())) {
-            if (lnPath.delete()) {
-                removed = true;
-                println "Removed test link ${lnName}"
-            } else {
-                success = false;
-                println "Failed to remove test link ${lnName}"
+        for (def lnPath : new File(projectDir, 'src/test/groovy').listFiles()) {
+            def lnName = lnPath.getName()
+            if ((System.properties.pluginName == 'all' || lnName == testprefix + '.groovy' || lnName == testprefix)
+                    && Files.isSymbolicLink(lnPath.toPath())) {
+                if (lnPath.delete()) {
+                    removed = true;
+                    println "Removed test link ${lnName}"
+                } else {
+                    success = false;
+                    println "Failed to remove test link ${lnName}"
+                }
             }
         }
+        if (success && removed) {
+            println 'All specified plugin links successfully removed from environment'
+        } else if (!success) {
+            println 'Warning: Some plugin links could not be removed'
+        } else if (System.properties.pluginName == 'all') {
+            println 'No plugins found in plugins directory; nothing to remove'
+        } else {
+            throw new InvalidUserDataException('Specified plugin not found in plugins directory')
+        }
+        println 'Please restart Artifactory now'
     }
-    if (success && removed) {
-        println 'All specified plugin links successfully removed from environment'
-    } else if (!success) {
-        println 'Warning: Some plugin links could not be removed'
-    } else if (System.properties.pluginName == 'all') {
-        println 'No plugins found in plugins directory; nothing to remove'
-    } else {
-        throw new InvalidUserDataException('Specified plugin not found in plugins directory')
-    }
-    println 'Please restart Artifactory now'
 }
 
 artifactory {
-    contextUrl = project.hasProperty('artifactory_contextUrl') ? "${artifactory_contextUrl}" : 'https://repo.jfrog.org/artifactory'
+    contextUrl = artifactoryContextUrl
     resolve {
         repository {
             repoKey = 'user-plugins'
